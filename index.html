@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RATIO.SCAN</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0c0c0e;color:#e4e4ea;font-family:'IBM Plex Sans',sans-serif;font-size:14px;min-height:100vh;padding:2.5rem 2rem}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const BASE = 'https://financialmodelingprep.com/api/v3';
+
+const S = {
+  bg:'#0c0c0e', surf:'#141416', surf2:'#1c1c20', border:'#252528',
+  borderHov:'#38383e', text:'#e4e4ea', muted:'#5a5a64', dim:'#2e2e34',
+  green:'#00d48a', greenBg:'rgba(0,212,138,0.07)', greenBorder:'rgba(0,212,138,0.25)',
+  red:'#ff5252', redBg:'rgba(255,82,82,0.07)', redBorder:'rgba(255,82,82,0.25)',
+  gold:'#f0b429', goldBg:'rgba(240,180,41,0.08)', goldBorder:'rgba(240,180,41,0.3)',
+};
+
+function App() {
+  const [key, setKey] = React.useState(() => localStorage.getItem('fmp_key') || '');
+  const [keyInput, setKeyInput] = React.useState(localStorage.getItem('fmp_key') ? '••••••••••••••••••••' : '');
+  const [keyVisible, setKeyVisible] = React.useState(false);
+  const [keySaved, setKeySaved] = React.useState(!!localStorage.getItem('fmp_key'));
+  const [ticker, setTicker] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const [data, setData] = React.useState(null);
+
+  function saveKey() {
+    const v = keyInput.trim();
+    if (!v || v.includes('•')) return;
+    localStorage.setItem('fmp_key', v);
+    setKey(v);
+    setKeyInput('••••••••••••••••••••');
+    setKeyVisible(false);
+    setKeySaved(true);
+    setTimeout(() => setKeySaved(true), 2000);
+  }
+
+  function toggleVis() {
+    if (!keyVisible) {
+      setKeyInput(key);
+    } else {
+      setKeyInput(key ? '••••••••••••••••••••' : '');
+    }
+    setKeyVisible(!keyVisible);
+  }
+
+  async function analyze() {
+    const t = ticker.trim().toUpperCase();
+    if (!t) return;
+    if (!key) { setError('⚠  Entre et enregistre ta clé API FMP.'); return; }
+    setError(''); setLoading(true); setData(null);
+    try {
+      const [profileRes, growthRes, kmRes, cfRes, incRes, bsRes] = await Promise.all([
+        fetch(`${BASE}/profile/${t}?apikey=${key}`).then(r => r.json()),
+        fetch(`${BASE}/financial-growth/${t}?limit=1&apikey=${key}`).then(r => r.json()),
+        fetch(`${BASE}/key-metrics/${t}?limit=1&apikey=${key}`).then(r => r.json()),
+        fetch(`${BASE}/cash-flow-statement/${t}?limit=1&apikey=${key}`).then(r => r.json()),
+        fetch(`${BASE}/income-statement/${t}?limit=1&apikey=${key}`).then(r => r.json()),
+        fetch(`${BASE}/balance-sheet-statement/${t}?limit=1&apikey=${key}`).then(r => r.json()),
+      ]);
+      const fmpErr = [profileRes, growthRes, kmRes].find(r => r && r['Error Message']);
+      if (fmpErr) throw new Error(`Clé API invalide — FMP : "${fmpErr['Error Message']}"`);
+      const prof = Array.isArray(profileRes) && profileRes[0];
+      if (!prof) throw new Error(`Ticker "${t}" introuvable. Vérifie le symbole.`);
+      const g = (Array.isArray(growthRes) && growthRes[0]) || {};
+      const km = (Array.isArray(kmRes) && kmRes[0]) || {};
+      const cf = (Array.isArray(cfRes) && cfRes[0]) || {};
+      const inc = (Array.isArray(incRes) && incRes[0]) || {};
+      const bs = (Array.isArray(bsRes) && bsRes[0]) || {};
+      const fcf = cf.freeCashFlow ?? null;
+      const revenue = inc.revenue ?? null;
+      const totalDebt = bs.totalDebt ?? 0;
+      const cash = bs.cashAndShortTermInvestments ?? bs.cashAndCashEquivalents ?? 0;
+      const netDebt = totalDebt - cash;
+      setData({
+        name: prof.companyName || t,
+        meta: [prof.exchangeShortName, prof.sector, prof.country].filter(Boolean).join(' · '),
+        price: prof.price, currency: prof.currency || '',
+        change: prof.changes, changePct: prof.changesPercentage,
+        date: g.date || km.date || cf.date || '—',
+        metrics: [
+          { label:'Croissance CA', raw: g.revenueGrowth ?? null, type:'growth', desc:'Revenue Growth YoY' },
+          { label:'Croissance FCF', raw: g.freeCashFlowGrowth ?? null, type:'growth', desc:'FCF Growth YoY' },
+          { label:'ROIC', raw: km.roic ?? null, type:'roic', desc:'Return on Invested Capital' },
+          { label:'P/E Ratio', raw: km.peRatio ?? null, type:'pe', desc:'Price / Earnings' },
+          { label:'Marge FCF', raw: (fcf != null && revenue) ? fcf/revenue : null, type:'margin', desc:'FCF / Revenue' },
+          { label:'Dette nette / FCF', raw: (fcf != null && fcf !== 0) ? netDebt/fcf : null, type:'netdebt', desc: netDebt < 0 ? 'Net cash position' : 'Leverage' },
+        ]
+      });
+    } catch(e) {
+      setError('⚠  ' + (e.message || 'Erreur réseau. Vérifie ta connexion.'));
+    } finally { setLoading(false); }
+  }
+
+  function fmt(raw, type) {
+    if (raw === null || raw === undefined || isNaN(raw)) return null;
+    if (type === 'pe') return raw.toFixed(1);
+    if (type === 'netdebt') return raw.toFixed(2) + 'x';
+    const sign = raw >= 0 ? '+' : '';
+    return sign + (raw * 100).toFixed(1) + '%';
+  }
+
+  function color(raw, type) {
+    if (raw === null || raw === undefined || isNaN(raw)) return {};
+    if (type === 'pe') return {};
+    if (type === 'netdebt') {
+      if (raw < 0) return { border:`2px solid ${S.green}`, background: S.greenBg, valueColor: S.green };
+      if (raw > 5) return { border:`2px solid ${S.red}`, background: S.redBg, valueColor: S.red };
+      return {};
+    }
+    if (raw > 0) return { border:`2px solid ${S.green}`, background: S.greenBg, valueColor: S.green };
+    return { border:`2px solid ${S.red}`, background: S.redBg, valueColor: S.red };
+  }
+
+  return (
+    <div style={{maxWidth:720,margin:'0 auto'}}>
+      {/* Header */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'2rem',paddingBottom:'1.25rem',borderBottom:`1px solid ${S.border}`}}>
+        <div style={{fontFamily:'IBM Plex Mono',fontSize:17,fontWeight:500,letterSpacing:'0.02em'}}>RATIO<span style={{color:S.gold}}>.</span>SCAN</div>
+        <div style={{fontFamily:'IBM Plex Mono',fontSize:11,color:S.muted,letterSpacing:'0.06em'}}>v2.0 · FMP</div>
+      </div>
+
+      {/* API Key */}
+      <div style={{display:'flex',alignItems:'center',gap:10,background:S.surf,border:`1px solid ${S.border}`,borderRadius:8,padding:'10px 14px',marginBottom:'1.25rem'}}>
+        <span style={{fontFamily:'IBM Plex Mono',fontSize:10,fontWeight:500,letterSpacing:'0.08em',color:S.muted,textTransform:'uppercase',whiteSpace:'nowrap'}}>FMP Key</span>
+        <input
+          type={keyVisible ? 'text' : 'password'}
+          value={keyInput}
+          onChange={e => { setKeyInput(e.target.value); setKeySaved(false); }}
+          placeholder="Colle ta clé API Financial Modeling Prep…"
+          style={{flex:1,background:S.surf2,border:`1px solid ${S.border}`,borderRadius:5,padding:'6px 10px',color:S.text,fontFamily:'IBM Plex Mono',fontSize:12,outline:'none'}}
+        />
+        <button onClick={toggleVis} style={{background:'none',border:'none',color:S.muted,cursor:'pointer',fontSize:14,padding:'0 4px'}}>👁</button>
+        <button onClick={saveKey} style={{background:S.goldBg,border:`1px solid ${S.goldBorder}`,color:S.gold,padding:'6px 14px',borderRadius:5,fontFamily:'IBM Plex Mono',fontSize:11,fontWeight:500,cursor:'pointer',whiteSpace:'nowrap'}}>Enregistrer</button>
+        {keySaved && <span style={{fontFamily:'IBM Plex Mono',fontSize:11,color:S.green,whiteSpace:'nowrap'}}>✓ Enregistrée</span>}
+      </div>
+
+      {/* Search */}
+      <div style={{display:'flex',gap:10,marginBottom:'1.75rem'}}>
+        <input
+          type="text"
+          value={ticker}
+          onChange={e => setTicker(e.target.value.toUpperCase())}
+          onKeyDown={e => e.key === 'Enter' && analyze()}
+          placeholder="Ticker  (ex : AAPL · MSFT · MC.PA · AIR.PA)"
+          maxLength={12}
+          style={{flex:1,background:S.surf,border:`1px solid ${S.border}`,borderRadius:8,padding:'13px 18px',color:S.text,fontFamily:'IBM Plex Mono',fontSize:20,fontWeight:500,letterSpacing:'0.1em',outline:'none'}}
+        />
+        <button
+          onClick={analyze}
+          disabled={loading}
+          style={{background:S.gold,border:'none',color:'#0c0c0e',padding:'13px 26px',borderRadius:8,fontSize:13,fontWeight:500,cursor:'pointer',whiteSpace:'nowrap',opacity:loading?0.4:1}}
+        >Analyser →</button>
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div style={{background:S.redBg,border:`1px solid ${S.redBorder}`,borderRadius:8,padding:'12px 16px',color:S.red,fontSize:12,fontFamily:'IBM Plex Mono',marginBottom:'1rem'}}>
+          {error}
+        </div>
+      )}
+
+      {/* Loader */}
+      {loading && (
+        <div style={{textAlign:'center',padding:'3rem'}}>
+          <div style={{width:28,height:28,border:`2px solid ${S.border}`,borderTopColor:S.gold,borderRadius:'50%',animation:'spin 0.75s linear infinite',margin:'0 auto 1rem'}}/>
+          <div style={{fontFamily:'IBM Plex Mono',fontSize:11,color:S.muted,letterSpacing:'0.08em'}}>RÉCUPÉRATION DES DONNÉES</div>
+        </div>
+      )}
+
+      {/* Result */}
+      {data && (
+        <div>
+          <div style={{marginBottom:'1.5rem',paddingBottom:'1.25rem',borderBottom:`1px solid ${S.border}`,display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'1rem'}}>
+            <div>
+              <div style={{fontSize:20,fontWeight:500,letterSpacing:'-0.01em',marginBottom:4}}>{data.name}</div>
+              <div style={{fontFamily:'IBM Plex Mono',fontSize:11,color:S.muted,letterSpacing:'0.04em'}}>{data.meta}</div>
+            </div>
+            {data.price && (
+              <div style={{textAlign:'right',flexShrink:0}}>
+                <div style={{fontFamily:'IBM Plex Mono',fontSize:22}}>{data.price.toFixed(2)} {data.currency}</div>
+                <div style={{fontFamily:'IBM Plex Mono',fontSize:12,color: data.change >= 0 ? S.green : S.red}}>
+                  {data.change >= 0 ? '+' : ''}{data.change?.toFixed(2)} ({data.change >= 0 ? '+' : ''}{Number(data.changePct).toFixed(2)}%)
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{fontSize:10,fontWeight:500,letterSpacing:'0.1em',color:S.dim,textTransform:'uppercase',marginBottom:10}}>
+            Indicateurs clés · Exercice annuel le plus récent
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:'2rem'}}>
+            {data.metrics.map((m, i) => {
+              const val = fmt(m.raw, m.type);
+              const cl = color(m.raw, m.type);
+              return (
+                <div key={i} style={{background: cl.background || S.surf, border: cl.border || `1px solid ${S.border}`, borderRadius:8, padding:'14px 16px'}}>
+                  <div style={{fontSize:10,fontWeight:500,letterSpacing:'0.07em',color:S.muted,textTransform:'uppercase',marginBottom:10}}>{m.label}</div>
+                  <div style={{fontFamily:'IBM Plex Mono',fontSize:26,fontWeight:400,letterSpacing:'-0.02em',lineHeight:1,color: val ? (cl.valueColor || S.text) : S.dim}}>
+                    {val || 'N/A'}
+                  </div>
+                  <div style={{fontSize:10,color:S.muted,marginTop:6,fontFamily:'IBM Plex Mono',letterSpacing:'0.02em'}}>{m.desc} · {data.date}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{paddingTop:'1.25rem',borderTop:`1px solid ${S.border}`,fontFamily:'IBM Plex Mono',fontSize:10,color:S.dim,lineHeight:1.8}}>
+            Source : Financial Modeling Prep · Données annuelles · Ticker : {ticker}<br/>
+            Rouge/Vert = signal directionnel (positif vs négatif), pas un critère d'achat.
+          </div>
+        </div>
+      )}
+
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
